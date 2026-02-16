@@ -1,0 +1,11 @@
+optimum-intel[openvino]
+transformers
+torch
+torchaudio
+openvino-genai
+librosa
+soundfile
+pyannote.audio
+python-dotenv
+numpy
+accelerate
