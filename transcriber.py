@@ -2,6 +2,7 @@ import os
 import librosa
 import torch
 import numpy as np
+from tkinter import Tk, filedialog
 from dotenv import load_dotenv
 from pyannote.audio import Pipeline
 import openvino_genai as ov_genai 
@@ -13,7 +14,6 @@ import soundfile as sf
 load_dotenv()
 
 # Configuration Variables
-VIDEO_PATH = "..."     
 TEMP_WAV_PATH = "temp_meeting_clean.wav"  
 HF_TOKEN = os.getenv("HF_TOKEN")
 MODEL_PATH = "whisper-base-ov"
@@ -22,6 +22,33 @@ DEVICE_DIARIZATION = "cpu"
 
 if not HF_TOKEN:
     raise ValueError("❌ HF_TOKEN not found in .env file!")
+
+# --- File selection dialogs (explorer / save-as) ---
+root = Tk()
+root.withdraw()
+root.attributes("-topmost", True)
+
+print("Select a video file to transcribe...")
+VIDEO_PATH = filedialog.askopenfilename(
+    title="Select video file to transcribe",
+    filetypes=[
+        ("Video files", ("*.mp4", "*.avi", "*.mkv", "*.mov", "*.webm", "*.flv", "*.wmv", "*.m4v")),
+        ("All files", "*.*"),
+    ],
+)
+if not VIDEO_PATH:
+    raise SystemExit("No video file selected. Exiting.")
+
+print("Choose where to save the transcript and enter the output .txt file name...")
+OUTPUT_FILE = filedialog.asksaveasfilename(
+    title="Save transcript as",
+    defaultextension=".txt",
+    filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+)
+if not OUTPUT_FILE:
+    raise SystemExit("No output file chosen. Exiting.")
+
+root.destroy()
 
 print(f"✅ Configuration loaded. Target: {DEVICE_WHISPER}")
 
@@ -117,12 +144,11 @@ for turn, _, speaker in annotation.itertracks(yield_label=True):
         
 # --- 5. CLEANUP & SAVING ---
 
-output_file = "meeting_minutes.txt"
-with open(output_file, "w", encoding="utf-8") as f:
+with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
     f.write("\n".join(final_transcript))
 
 # Optional: Delete the temp wav file to save space
 if os.path.exists(TEMP_WAV_PATH):
     os.remove(TEMP_WAV_PATH)
 
-print(f"\n✅ Transcription Complete! Saved to {output_file}")
+print(f"\n✅ Transcription Complete! Saved to {OUTPUT_FILE}")
