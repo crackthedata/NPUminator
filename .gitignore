@@ -144,6 +144,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# NPUminator: exported OpenVINO Whisper model (downloaded via optimum-cli)
+whisper-base-ov/
+
 # Spyder project settings
 .spyderproject
 .spyproject
