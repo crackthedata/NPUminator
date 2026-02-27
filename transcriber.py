@@ -2,7 +2,7 @@ import os
 import librosa
 import torch
 import numpy as np
-from tkinter import Tk, filedialog
+from tkinter import Tk, filedialog, simpledialog
 from dotenv import load_dotenv
 from pyannote.audio import Pipeline
 import openvino_genai as ov_genai 
@@ -47,6 +47,18 @@ OUTPUT_FILE = filedialog.asksaveasfilename(
 )
 if not OUTPUT_FILE:
     raise SystemExit("No output file chosen. Exiting.")
+
+NUM_SPEAKERS = simpledialog.askinteger(
+    "Number of speakers",
+    "How many speakers are in the conversation?\n(Leave empty or Cancel for auto-detect.)",
+    initialvalue=2,
+    minvalue=1,
+    maxvalue=50,
+    parent=root,
+)
+# None means user cancelled → let Pyannote auto-detect; otherwise use the chosen value
+if NUM_SPEAKERS is not None:
+    print(f"   -> Diarization will use num_speakers={NUM_SPEAKERS}")
 
 root.destroy()
 
@@ -97,7 +109,11 @@ except Exception as e:
 
 print("\n🕵️  Step 1: Analyzing Speakers (Diarization)...")
 # CRITICAL CHANGE: We pass the CLEAN WAV file, not the MP4
-diarization_result = diarization_pipeline(TEMP_WAV_PATH)
+# NUM_SPEAKERS from tkinter dialog (None = auto-detect)
+if NUM_SPEAKERS is not None:
+    diarization_result = diarization_pipeline(TEMP_WAV_PATH, num_speakers=NUM_SPEAKERS)
+else:
+    diarization_result = diarization_pipeline(TEMP_WAV_PATH)
 
 print("\n📝 Step 2: Transcribing Segments (Whisper GenAI)...")
 final_transcript = []
