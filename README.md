@@ -6,7 +6,7 @@ Locally deployed video transcription tool using OpenVINO, tailored to use Intel 
 **transcriber.py** is the main script: it transcribes video (or audio) into text with **speaker labels**. You pick a video file and an output path; the script converts the track to 16 kHz WAV, runs **speaker diarization** to determine “who spoke when,” then transcribes each segment.
 
 - **Transcription** is done by a **local Whisper model** (OpenVINO) running on the **Intel NPU**, so inference stays on-device and power-efficient.
-- **Speaker diarization** (“who spoke when”) is handled by **Pyannote** and runs on the **CPU**.
+- **Speaker diarization** (“who spoke when”) is handled by **Pyannote** and runs on the **CPU**. You can set the number of speakers in the dialog (default: **2**; allowed range: **1–50**). If you leave it unset (Cancel), the pipeline is called without `num_speakers` so Pyannote **auto-detects** the number of speakers.
 
 The result is a timestamped transcript saved as a `.txt` file (e.g. `[0.0s - 5.2s] SPEAKER_00: Hello everyone.`).
 
