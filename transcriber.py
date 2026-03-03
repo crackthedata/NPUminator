@@ -21,7 +21,7 @@ DEVICE_WHISPER = "NPU"
 DEVICE_DIARIZATION = "cpu"      
 
 if not HF_TOKEN:
-    raise ValueError("❌ HF_TOKEN not found in .env file!")
+    raise ValueError("HF_TOKEN not found in .env file!")
 
 # --- File selection dialogs (explorer / save-as) ---
 root = Tk()
@@ -62,11 +62,11 @@ if NUM_SPEAKERS is not None:
 
 root.destroy()
 
-print(f"✅ Configuration loaded. Target: {DEVICE_WHISPER}")
+print(f"Configuration loaded. Target: {DEVICE_WHISPER}")
 
 # --- 2. PRE-PROCESSING (The Fix) ---
 
-print(f"\n🎧 Step 0: Converting '{VIDEO_PATH}' to clean WAV format...")
+print(f"\n Step 0: Converting '{VIDEO_PATH}' to clean WAV format...")
 # This fixes the "ValueError: requested chunk..." crash by ensuring
 # Pyannote reads a perfect 16kHz WAV file, not a messy MP4.
 try:
@@ -81,12 +81,12 @@ except Exception as e:
 
 # --- 3. LOAD MODELS ---
 
-print(f"\n🚀 Loading WhisperPipeline from '{MODEL_PATH}' to {DEVICE_WHISPER}...")
+print(f"\n Loading WhisperPipeline from '{MODEL_PATH}' to {DEVICE_WHISPER}...")
 try:
     whisper_pipe = ov_genai.WhisperPipeline(MODEL_PATH, DEVICE_WHISPER)
     print(f"   -> Success! Whisper running on {DEVICE_WHISPER}")
 except Exception as e:
-    print(f"⚠️  NPU Error: {e}")
+    print(f"  NPU Error: {e}")
     print("   -> Falling back to CPU...")
     whisper_pipe = ov_genai.WhisperPipeline(MODEL_PATH, "CPU")
 
@@ -115,7 +115,7 @@ if NUM_SPEAKERS is not None:
 else:
     diarization_result = diarization_pipeline(TEMP_WAV_PATH)
 
-print("\n📝 Step 2: Transcribing Segments (Whisper GenAI)...")
+print("\n Step 2: Transcribing Segments (Whisper GenAI)...")
 final_transcript = []
 
 # --- NEW: Handle the new Pyannote v4.x output format ---
@@ -156,7 +156,7 @@ for turn, _, speaker in annotation.itertracks(yield_label=True):
             final_transcript.append(formatted_line)
             
     except Exception as e:
-        print(f"⚠️ Error transcribing segment {start_sec}-{end_sec}: {e}")
+        print(f" Error transcribing segment {start_sec}-{end_sec}: {e}")
         
 # --- 5. CLEANUP & SAVING ---
 
