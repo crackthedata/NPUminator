@@ -45,7 +45,7 @@ Before running NPUminator, complete these steps:
    cd NPUminator
    ```
 
-   **Windows (PowerShell or CMD):**
+   **Windows (CMD):**
    ```
    git clone https://github.com/crackthedata/NPUminator.git
    cd NPUminator
@@ -63,7 +63,7 @@ Before running NPUminator, complete these steps:
    source venv/bin/activate
    ```
 
-   **Windows (PowerShell or CMD):**
+   **Windows (CMD):**
    ```
    venv\Scripts\activate
    ```
@@ -80,3 +80,19 @@ Before running NPUminator, complete these steps:
    optimum-cli export openvino --model openai/whisper-base --trust-remote-code whisper-base-ov
    ```
    This exports the `openai/whisper-base` model to the `whisper-base-ov` directory for use with OpenVINO/NPU.
+6. **Create a Hugging Face access token and accept Pyannote license terms**  
+   The transcriber uses Pyannote for speaker diarization; Pyannote models require a Hugging Face token and accepted license.
+
+   - Go to [Hugging Face → Access Tokens](https://huggingface.co/settings/tokens) and create a token (read access is enough).
+   - Open the [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) model page and **Accept** the license terms if you haven’t already. Do the same for [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) if the pipeline prompts you to.
+   - In the project root, create or edit a `.env` file and add:
+     ```
+     HF_TOKEN=your_token_here
+     ```
+     Replace `your_token_here` with your actual token. The script loads this via `python-dotenv` and uses it for the Pyannote pipeline.
+
+## Run the transcriber
+
+```
+python transcriber.py
+```
