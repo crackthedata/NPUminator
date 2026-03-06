@@ -92,7 +92,17 @@ Before running NPUminator, complete these steps:
      Replace `your_token_here` with your actual token. The script loads this via `python-dotenv` and uses it for the Pyannote pipeline.
 
 ## Run the transcriber
-
+Run with the virtual environment activated:
 ```
 python transcriber.py
 ```
+
+When you run the script, the following will happen:
+1. An explorer box will open to select the video file to transcribe.
+2. An explorer box will open to save the transcript as a `.txt` file.
+3. A dialog box will open for the user to select how many speakers should be identified in the conversation, if they know. If they don't know, the user should leave it null and the pipeline will try to identify how many speakers, but this is subject to error.
+
+## Future Work
+
+1. Expand coverage to other Windows computers (that don't have NPU) and Mac computers, using GPU for transcription.
+2. Evaluate performance of other models that perform transcription locally.
