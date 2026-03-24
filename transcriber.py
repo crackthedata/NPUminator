@@ -1,11 +1,13 @@
 import os
+from typing import Any, Callable, List, Optional, Tuple
+
 import librosa
 import torch
 import numpy as np
 from tkinter import Tk, filedialog, simpledialog
 from dotenv import load_dotenv
 from pyannote.audio import Pipeline
-import openvino_genai as ov_genai 
+from transformers import pipeline as hf_pipeline
 import soundfile as sf
 
 # --- 1. SETUP & CONFIGURATION ---
@@ -14,11 +16,121 @@ import soundfile as sf
 load_dotenv()
 
 # Configuration Variables
-TEMP_WAV_PATH = "temp_meeting_clean.wav"  
+TEMP_WAV_PATH = "temp_meeting_clean.wav"
 HF_TOKEN = os.getenv("HF_TOKEN")
-MODEL_PATH = "whisper-base-ov"
-DEVICE_WHISPER = "NPU"
-DEVICE_DIARIZATION = "cpu"      
+MODEL_PATH = os.getenv("WHISPER_MODEL_PATH", "whisper")
+# OpenVINO device: NPU | GPU | CPU (optional; auto-tries NPU→GPU→CPU if unset)
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "").strip() or None
+# auto: CUDA/MPS → PyTorch Whisper; else OpenVINO from MODEL_PATH
+# openvino | torch: force that backend
+WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "auto").strip().lower()
+# Hugging Face model id when using PyTorch backend (downloaded on first run)
+WHISPER_HF_MODEL = os.getenv("WHISPER_HF_MODEL", "openai/whisper-small")
+
+
+def _diarization_torch_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def _openvino_device_order(preferred: Optional[str]) -> List[str]:
+    order = ["NPU", "GPU", "CPU"]
+    if not preferred:
+        return order
+    p = preferred.strip().upper()
+    if p not in order:
+        return order
+    return [p] + [d for d in order if d != p]
+
+
+def _load_whisper_openvino(model_path: str, device_hint: Optional[str]) -> Tuple[Any, str]:
+    import openvino_genai as ov_genai_local
+
+    if not os.path.isdir(model_path):
+        raise FileNotFoundError(
+            f"OpenVINO Whisper folder not found: {model_path!r}. "
+            "Export with optimum-cli (see README) or set WHISPER_MODEL_PATH."
+        )
+    last_err: Optional[Exception] = None
+    for dev in _openvino_device_order(device_hint):
+        try:
+            wp = ov_genai_local.WhisperPipeline(model_path, dev)
+            return wp, dev
+        except Exception as e:
+            last_err = e
+            print(f"   OpenVINO Whisper on {dev} failed: {e}")
+    raise RuntimeError(f"OpenVINO Whisper could not load on any device. Last error: {last_err}")
+
+
+def _pipeline_device_arg(dev: torch.device):
+    if dev.type == "cuda":
+        return 0
+    if dev.type == "mps":
+        return "mps"
+    return -1
+
+
+def _load_whisper_torch(model_id: str) -> Tuple[Any, torch.device]:
+    dev = _diarization_torch_device()
+    torch_dtype = torch.float16 if dev.type == "cuda" else torch.float32
+    pipe = hf_pipeline(
+        "automatic-speech-recognition",
+        model=model_id,
+        torch_dtype=torch_dtype,
+        device=_pipeline_device_arg(dev),
+    )
+    return pipe, dev
+
+
+def _transcribe_openvino(pipe: Any, audio: np.ndarray) -> str:
+    return str(pipe.generate(audio)).strip()
+
+
+def _transcribe_torch(pipe: Any, audio: np.ndarray) -> str:
+    out = pipe(audio, sampling_rate=16000)
+    if isinstance(out, dict):
+        return (out.get("text") or "").strip()
+    return str(out).strip()
+
+
+def _resolved_whisper_backend() -> str:
+    if WHISPER_BACKEND in ("openvino", "torch"):
+        return WHISPER_BACKEND
+    if WHISPER_BACKEND != "auto":
+        print(f"   Unknown WHISPER_BACKEND={WHISPER_BACKEND!r}, using auto.")
+    if torch.cuda.is_available():
+        return "torch"
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "torch"
+    return "openvino"
+
+
+def _build_whisper_transcriber() -> Tuple[Callable[[np.ndarray], str], str]:
+    mode = _resolved_whisper_backend()
+    if mode == "torch":
+        print(f"\n Loading Whisper (PyTorch) — {WHISPER_HF_MODEL} ...")
+        pipe, dev = _load_whisper_torch(WHISPER_HF_MODEL)
+        label = f"PyTorch / {dev.type.upper()}"
+        print(f"   -> Success! Whisper on {label}")
+
+        def fn(audio: np.ndarray) -> str:
+            return _transcribe_torch(pipe, audio)
+
+        return fn, label
+
+    print(f"\n Loading Whisper (OpenVINO) from '{MODEL_PATH}' ...")
+    ov_pipe, ov_dev = _load_whisper_openvino(MODEL_PATH, WHISPER_DEVICE)
+    label = f"OpenVINO / {ov_dev}"
+    print(f"   -> Success! Whisper on {label}")
+
+    def fn(audio: np.ndarray) -> str:
+        return _transcribe_openvino(ov_pipe, audio)
+
+    return fn, label
+
 
 if not HF_TOKEN:
     raise ValueError("HF_TOKEN not found in .env file!")
@@ -62,7 +174,7 @@ if NUM_SPEAKERS is not None:
 
 root.destroy()
 
-print(f"Configuration loaded. Target: {DEVICE_WHISPER}")
+print(f"Configuration loaded (WHISPER_BACKEND={WHISPER_BACKEND!r}).")
 
 # --- 2. PRE-PROCESSING (The Fix) ---
 
@@ -81,27 +193,17 @@ except Exception as e:
 
 # --- 3. LOAD MODELS ---
 
-print(f"\n Loading WhisperPipeline from '{MODEL_PATH}' to {DEVICE_WHISPER}...")
-try:
-    whisper_pipe = ov_genai.WhisperPipeline(MODEL_PATH, DEVICE_WHISPER)
-    print(f"   -> Success! Whisper running on {DEVICE_WHISPER}")
-except Exception as e:
-    print(f"  NPU Error: {e}")
-    print("   -> Falling back to CPU...")
-    whisper_pipe = ov_genai.WhisperPipeline(MODEL_PATH, "CPU")
+transcribe_segment, whisper_runtime_label = _build_whisper_transcriber()
 
 print("\n🎤 Loading Pyannote Pipeline (Speaker ID)...")
 try:
-    # Updated to use 'token=' instead of 'use_auth_token=' for newer versions
     diarization_pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1", 
-        token=HF_TOKEN 
+        "pyannote/speaker-diarization-3.1",
+        token=HF_TOKEN,
     )
-    if torch.cuda.is_available():
-        diarization_pipeline.to(torch.device("cuda"))
-        print("   -> Diarization: GPU (CUDA)")
-    else:
-        print("   -> Diarization: CPU")
+    d_dev = _diarization_torch_device()
+    diarization_pipeline.to(d_dev)
+    print(f"   -> Diarization: {d_dev.type.upper()}")
 except Exception as e:
     raise RuntimeError(f"Pyannote Error: {e}")
 
@@ -115,7 +217,7 @@ if NUM_SPEAKERS is not None:
 else:
     diarization_result = diarization_pipeline(TEMP_WAV_PATH)
 
-print("\n Step 2: Transcribing Segments (Whisper GenAI)...")
+print(f"\n Step 2: Transcribing segments ({whisper_runtime_label})...")
 final_transcript = []
 
 # --- NEW: Handle the new Pyannote v4.x output format ---
@@ -144,9 +246,7 @@ for turn, _, speaker in annotation.itertracks(yield_label=True):
     speaker_audio = audio_data[start_sample:end_sample]
 
     try:
-        # Pass the raw numpy array directly to the C++ pipeline
-        res = whisper_pipe.generate(speaker_audio)
-        text = str(res).strip()
+        text = transcribe_segment(speaker_audio)
         
         if text:
             # Format: [00:15 - 00:20] SPEAKER_00: Hello.
