@@ -145,6 +145,8 @@ env.bak/
 venv.bak/
 
 # NPUminator: exported OpenVINO Whisper model (downloaded via optimum-cli)
+# NPUminator: temp WAV written during transcriber runs
+temp_meeting_clean.wav
 whisper/
 whisper-base-ov/
 whisper-small-ov/

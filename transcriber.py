@@ -15,18 +15,38 @@ import soundfile as sf
 # Load environment variables from .env file
 load_dotenv()
 
-# Configuration Variables
+# Configuration Variables (set in .env or the shell; see README)
+#
+# HF_TOKEN
+#   Required. Hugging Face read token for Pyannote diarization.
+#
+# WHISPER_MODEL_PATH
+#   Folder with an OpenVINO Whisper export (optimum-cli). Default: "whisper"
+#   Example: WHISPER_MODEL_PATH=C:\models\whisper-medium-ov
+#
+# WHISPER_DEVICE  (OpenVINO only; ignored for PyTorch Whisper)
+#   Prefer one device, then script falls back through the rest:
+#     NPU | GPU | CPU
+#   Empty / unset: try NPU → GPU → CPU in order.
+#
+# WHISPER_BACKEND
+#   auto     — PyTorch Whisper if CUDA or Apple MPS exists, else OpenVINO (default)
+#   torch    — always Hugging Face + PyTorch (CUDA / MPS / CPU)
+#   openvino — always local OpenVINO export at WHISPER_MODEL_PATH
+#
+# WHISPER_HF_MODEL  (PyTorch / WHISPER_BACKEND=torch or auto with GPU)
+#   Any Hub ASR model id, e.g.:
+#     openai/whisper-tiny, openai/whisper-base, openai/whisper-small,
+#     openai/whisper-medium, openai/whisper-large-v2, openai/whisper-large-v3,
+#     distil-whisper/distil-small.en, …
+#   Default below: openai/whisper-small
+
 TEMP_WAV_PATH = "temp_meeting_clean.wav"
 HF_TOKEN = os.getenv("HF_TOKEN")
 MODEL_PATH = os.getenv("WHISPER_MODEL_PATH", "whisper")
-# OpenVINO device: NPU | GPU | CPU (optional; auto-tries NPU→GPU→CPU if unset)
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "").strip() or None
-# auto: CUDA/MPS → PyTorch Whisper; else OpenVINO from MODEL_PATH
-# openvino | torch: force that backend
 WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "auto").strip().lower()
-# Hugging Face model id when using PyTorch backend (downloaded on first run)
 WHISPER_HF_MODEL = os.getenv("WHISPER_HF_MODEL", "openai/whisper-small")
-
 
 def _diarization_torch_device() -> torch.device:
     if torch.cuda.is_available():
@@ -176,13 +196,12 @@ root.destroy()
 
 print(f"Configuration loaded (WHISPER_BACKEND={WHISPER_BACKEND!r}).")
 
-# --- 2. PRE-PROCESSING (The Fix) ---
+# --- 2. PRE-PROCESSING ---
 
 print(f"\n Step 0: Converting '{VIDEO_PATH}' to clean WAV format...")
-# This fixes the "ValueError: requested chunk..." crash by ensuring
-# Pyannote reads a perfect 16kHz WAV file, not a messy MP4.
+# Pyannote reads a 16kHz WAV file
 try:
-    # Load the audio from the video (this handles the decoding)
+    # Load the audio from the video to handle decoding 
     audio_data, samplerate = librosa.load(VIDEO_PATH, sr=16000)
     
     # Save it as a clean 16kHz WAV file
@@ -195,7 +214,7 @@ except Exception as e:
 
 transcribe_segment, whisper_runtime_label = _build_whisper_transcriber()
 
-print("\n🎤 Loading Pyannote Pipeline (Speaker ID)...")
+print("\n Loading Pyannote Pipeline (Speaker ID)...")
 try:
     diarization_pipeline = Pipeline.from_pretrained(
         "pyannote/speaker-diarization-3.1",
@@ -209,9 +228,8 @@ except Exception as e:
 
 # --- 4. PROCESSING ---
 
-print("\n🕵️  Step 1: Analyzing Speakers (Diarization)...")
-# CRITICAL CHANGE: We pass the CLEAN WAV file, not the MP4
-# NUM_SPEAKERS from tkinter dialog (None = auto-detect)
+print("\n  Step 1: Analyzing Speakers (Diarization)...")
+
 if NUM_SPEAKERS is not None:
     diarization_result = diarization_pipeline(TEMP_WAV_PATH, num_speakers=NUM_SPEAKERS)
 else:
@@ -220,8 +238,7 @@ else:
 print(f"\n Step 2: Transcribing segments ({whisper_runtime_label})...")
 final_transcript = []
 
-# --- NEW: Handle the new Pyannote v4.x output format ---
-# We check if the result is wrapped in the new 'DiarizeOutput' object
+# Check if the result is wrapped in the new 'DiarizeOutput'
 if hasattr(diarization_result, "speaker_diarization"):
     # Extract the actual timeline data from the wrapper
     annotation = diarization_result.speaker_diarization
@@ -229,7 +246,7 @@ else:
     # Fallback for older Pyannote versions
     annotation = diarization_result
 
-# We use our newly extracted 'annotation' variable here instead of 'diarization_result'
+# Use extracted 'annotation' variable instead of 'diarization_result'
 for turn, _, speaker in annotation.itertracks(yield_label=True):
     start_sec = turn.start
     end_sec = turn.end
@@ -242,7 +259,7 @@ for turn, _, speaker in annotation.itertracks(yield_label=True):
     start_sample = int(start_sec * 16000)
     end_sample = int(end_sec * 16000)
     
-    # Slice the audio from our pre-loaded array
+    # Slice the audio from pre-loaded array
     speaker_audio = audio_data[start_sample:end_sample]
 
     try:
@@ -267,4 +284,4 @@ with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
 if os.path.exists(TEMP_WAV_PATH):
     os.remove(TEMP_WAV_PATH)
 
-print(f"\n✅ Transcription Complete! Saved to {OUTPUT_FILE}")
+print(f"\n Transcription Complete! Saved to {OUTPUT_FILE}")
