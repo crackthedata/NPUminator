@@ -110,22 +110,39 @@ Only needed if you rely on the **OpenVINO** Whisper path (no CUDA/MPS, or `WHISP
 
    - Go to [Hugging Face → Access Tokens](https://huggingface.co/settings/tokens) and create a token (read access is enough).
    - Open the [pyannote/speaker-diarization-3.1](https://huggingface.co/pyannote/speaker-diarization-3.1) model page and **Accept** the license terms if you haven’t already. Do the same for [pyannote/segmentation-3.0](https://huggingface.co/pyannote/segmentation-3.0) if the pipeline prompts you to.
-   - In the project root, create or edit a `.env` file and add:
+   - In the project root, create or edit a `.env` file (you can copy `.env.example`) and add your token:
      ```
      HF_TOKEN=your_token_here
      ```
-     Replace `your_token_here` with your actual token. The script loads this via `python-dotenv` and uses it for the Pyannote pipeline.
+     Replace `your_token_here` with your actual token. The script loads this via `python-dotenv` and uses it for the Pyannote pipeline. You can also configure other settings in this file; check `.env.example` for details.
 
 ## Run the transcriber
-Run with the virtual environment activated:
-```
-python transcriber.py
-```
 
-When you run the script, the following will happen:
+There are a few ways to run the transcription pipeline:
+
+### 1. Using the Single Video Batch File (Windows)
+Double-click `run_transcriber_single.bat`. It will automatically activate the virtual environment and run `transcriber.py`.
+The following will happen:
 1. An explorer box will open to select the video file to transcribe.
-2. An explorer box will open to save the transcript as a `.txt` file.
-3. A dialog box will open for the user to select how many speakers should be identified in the conversation, if they know. If they don't know, the user should leave it null and the pipeline will try to identify how many speakers, but this is subject to error.
+2. An explorer box will open to save the transcript. It defaults to the video's filename appended with `.txt`, which you can change.
+3. A dialog box will open for you to select how many speakers should be identified. If you don't know, leave it empty/cancel, and the pipeline will try to identify the speaker count automatically.
+
+### 2. Batch Processing a Folder of Videos (Windows)
+Double-click `run_transcriber_folder.bat`. It will:
+1. Prompt you to select a folder containing `.mp4` video files.
+2. Ask for a delay (in seconds) to wait between processing each video (useful to prevent your machine from overheating).
+3. Automatically process every `.mp4` file in the folder, using auto-detection for the number of speakers and saving the output as `<video_name>.txt`.
+
+### 3. Command Line Execution (Advanced)
+If you want to bypass the graphical prompts, you can provide arguments directly to the script:
+```bash
+# Activate your environment first, then:
+python transcriber.py --video "my_video.mp4" --output "my_video.mp4.txt" --speakers "auto"
+```
+Arguments:
+- `--video`: Path to the input video.
+- `--output`: Path to the output transcript text file.
+- `--speakers`: Integer number of speakers, or `auto` to let the model decide.
 
 ## Future work
 

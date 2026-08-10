@@ -156,43 +156,62 @@ if not HF_TOKEN:
     raise ValueError("HF_TOKEN not found in .env file!")
 
 # --- File selection dialogs (explorer / save-as) ---
-root = Tk()
-root.withdraw()
-root.attributes("-topmost", True)
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--video", type=str, help="Path to video file")
+parser.add_argument("--output", type=str, help="Path to output .txt file")
+parser.add_argument("--speakers", type=str, help="Number of speakers or 'auto'")
+args, _ = parser.parse_known_args()
 
-print("Select a video file to transcribe...")
-VIDEO_PATH = filedialog.askopenfilename(
-    title="Select video file to transcribe",
-    filetypes=[
-        ("Video files", ("*.mp4", "*.avi", "*.mkv", "*.mov", "*.webm", "*.flv", "*.wmv", "*.m4v")),
-        ("All files", "*.*"),
-    ],
-)
-if not VIDEO_PATH:
-    raise SystemExit("No video file selected. Exiting.")
-
-print("Choose where to save the transcript and enter the output .txt file name...")
-OUTPUT_FILE = filedialog.asksaveasfilename(
-    title="Save transcript as",
-    defaultextension=".txt",
-    filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-)
-if not OUTPUT_FILE:
-    raise SystemExit("No output file chosen. Exiting.")
-
-NUM_SPEAKERS = simpledialog.askinteger(
-    "Number of speakers",
-    "How many speakers are in the conversation?\n(Leave empty or Cancel for auto-detect.)",
-    initialvalue=2,
-    minvalue=1,
-    maxvalue=50,
-    parent=root,
-)
-# None means user cancelled → let Pyannote auto-detect; otherwise use the chosen value
-if NUM_SPEAKERS is not None:
-    print(f"   -> Diarization will use num_speakers={NUM_SPEAKERS}")
-
-root.destroy()
+if args.video and args.output and args.speakers:
+    VIDEO_PATH = args.video
+    OUTPUT_FILE = args.output
+    if args.speakers.lower() == "auto":
+        NUM_SPEAKERS = None
+    else:
+        NUM_SPEAKERS = int(args.speakers)
+    if NUM_SPEAKERS is not None:
+        print(f"   -> Diarization will use num_speakers={NUM_SPEAKERS}")
+else:
+    root = Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    
+    print("Select a video file to transcribe...")
+    VIDEO_PATH = filedialog.askopenfilename(
+        title="Select video file to transcribe",
+        filetypes=[
+            ("Video files", ("*.mp4", "*.avi", "*.mkv", "*.mov", "*.webm", "*.flv", "*.wmv", "*.m4v")),
+            ("All files", "*.*"),
+        ],
+    )
+    if not VIDEO_PATH:
+        raise SystemExit("No video file selected. Exiting.")
+    
+    print("Choose where to save the transcript and enter the output .txt file name...")
+    default_filename = os.path.basename(VIDEO_PATH) + ".txt"
+    OUTPUT_FILE = filedialog.asksaveasfilename(
+        title="Save transcript as",
+        initialfile=default_filename,
+        defaultextension=".txt",
+        filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+    )
+    if not OUTPUT_FILE:
+        raise SystemExit("No output file chosen. Exiting.")
+    
+    NUM_SPEAKERS = simpledialog.askinteger(
+        "Number of speakers",
+        "How many speakers are in the conversation?\n(Leave empty or Cancel for auto-detect.)",
+        initialvalue=2,
+        minvalue=1,
+        maxvalue=50,
+        parent=root,
+    )
+    # None means user cancelled → let Pyannote auto-detect; otherwise use the chosen value
+    if NUM_SPEAKERS is not None:
+        print(f"   -> Diarization will use num_speakers={NUM_SPEAKERS}")
+    
+    root.destroy()
 
 print(f"Configuration loaded (WHISPER_BACKEND={WHISPER_BACKEND!r}).")
 
