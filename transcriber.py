@@ -40,6 +40,12 @@ load_dotenv()
 #     openai/whisper-medium, openai/whisper-large-v2, openai/whisper-large-v3,
 #     distil-whisper/distil-small.en, …
 #   Default below: openai/whisper-small
+#
+# WHISPER_OV_RELOAD_EVERY  (OpenVINO only)
+#   The NPU plugin's memory pool degrades over many varying-shape inference
+#   calls, eventually throwing "bad allocation". To work around this, the
+#   OpenVINO pipeline is reloaded from scratch every N segments. Set to 0 to
+#   disable. Default: 50
 
 TEMP_WAV_PATH = "temp_meeting_clean.wav"
 HF_TOKEN = os.getenv("HF_TOKEN")
@@ -47,6 +53,7 @@ MODEL_PATH = os.getenv("WHISPER_MODEL_PATH", "whisper")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "").strip() or None
 WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "auto").strip().lower()
 WHISPER_HF_MODEL = os.getenv("WHISPER_HF_MODEL", "openai/whisper-small")
+WHISPER_OV_RELOAD_EVERY = int(os.getenv("WHISPER_OV_RELOAD_EVERY", "50") or 0)
 
 def _diarization_torch_device() -> torch.device:
     if torch.cuda.is_available():
@@ -109,6 +116,39 @@ def _transcribe_openvino(pipe: Any, audio: np.ndarray) -> str:
     return str(pipe.generate(audio)).strip()
 
 
+class _OpenVinoWhisperTranscriber:
+    """Wraps an OpenVINO WhisperPipeline and periodically reloads it.
+
+    The NPU plugin's memory pool degrades across many inference calls with
+    varying input shapes, eventually raising "bad allocation" from
+    infer_request.cpp. Reloading the pipeline from scratch every N segments
+    resets that state before it gets bad enough to fail.
+    """
+
+    def __init__(self, model_path: str, device_hint: Optional[str], reload_every: int):
+        self.model_path = model_path
+        self.device_hint = device_hint
+        self.reload_every = reload_every
+        self.segment_count = 0
+        self.pipe, self.device = _load_whisper_openvino(model_path, device_hint)
+
+    def _reload(self) -> None:
+        print(f"   Reloading OpenVINO Whisper pipeline on {self.device} "
+              f"(every {self.reload_every} segments) to reset device memory...")
+        self.pipe = None
+        try:
+            self.pipe, self.device = _load_whisper_openvino(self.model_path, self.device_hint)
+        except Exception as e:
+            print(f"   Reload failed, falling back through device order: {e}")
+            self.pipe, self.device = _load_whisper_openvino(self.model_path, None)
+
+    def __call__(self, audio: np.ndarray) -> str:
+        if self.reload_every and self.segment_count > 0 and self.segment_count % self.reload_every == 0:
+            self._reload()
+        self.segment_count += 1
+        return _transcribe_openvino(self.pipe, audio)
+
+
 def _transcribe_torch(pipe: Any, audio: np.ndarray) -> str:
     out = pipe(audio, sampling_rate=16000)
     if isinstance(out, dict):
@@ -142,14 +182,13 @@ def _build_whisper_transcriber() -> Tuple[Callable[[np.ndarray], str], str]:
         return fn, label
 
     print(f"\n Loading Whisper (OpenVINO) from '{MODEL_PATH}' ...")
-    ov_pipe, ov_dev = _load_whisper_openvino(MODEL_PATH, WHISPER_DEVICE)
-    label = f"OpenVINO / {ov_dev}"
+    ov_transcriber = _OpenVinoWhisperTranscriber(MODEL_PATH, WHISPER_DEVICE, WHISPER_OV_RELOAD_EVERY)
+    label = f"OpenVINO / {ov_transcriber.device}"
     print(f"   -> Success! Whisper on {label}")
+    if WHISPER_OV_RELOAD_EVERY:
+        print(f"   -> Will reload pipeline every {WHISPER_OV_RELOAD_EVERY} segments to avoid NPU memory exhaustion")
 
-    def fn(audio: np.ndarray) -> str:
-        return _transcribe_openvino(ov_pipe, audio)
-
-    return fn, label
+    return ov_transcriber, label
 
 
 if not HF_TOKEN:
