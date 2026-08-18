@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import subprocess
 from tkinter import Tk, filedialog, simpledialog
@@ -41,7 +42,7 @@ def main():
         print(f"\n[{i+1}/{len(mp4_files)}] Processing: {file_name}")
         
         cmd = [
-            "python", "transcriber.py",
+            sys.executable, "transcriber.py",
             "--video", video_path,
             "--output", output_file,
             "--speakers", "auto"
