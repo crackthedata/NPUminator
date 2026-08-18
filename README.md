@@ -103,7 +103,6 @@ Only needed if you rely on the **OpenVINO** Whisper path (no CUDA/MPS, or `WHISP
 | `WHISPER_HF_MODEL` | `openai/whisper-small` | Hugging Face model id for **PyTorch** Whisper. |
 | `WHISPER_MODEL_PATH` | `whisper` | Folder with **OpenVINO** export. |
 | `WHISPER_DEVICE` | *(empty)* | OpenVINO only: prefer `NPU`, `GPU`, or `CPU` before trying other devices. |
-| `WHISPER_OV_RELOAD_EVERY` | `50` | OpenVINO only: reload the Whisper pipeline every N segments to avoid NPU memory exhaustion (`bad allocation` errors) on long recordings. Set to `0` to disable. |
 | `HF_TOKEN` | — | Required for Pyannote (set in `.env`). |
 
 6. **Create a Hugging Face access token and accept Pyannote license terms**  
