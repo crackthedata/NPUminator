@@ -1,11 +1,13 @@
 import os
+from typing import Any, Callable, List, Optional, Tuple
+
 import librosa
 import torch
 import numpy as np
 from tkinter import Tk, filedialog, simpledialog
 from dotenv import load_dotenv
 from pyannote.audio import Pipeline
-import openvino_genai as ov_genai 
+from transformers import pipeline as hf_pipeline
 import soundfile as sf
 
 # --- 1. SETUP & CONFIGURATION ---
@@ -13,64 +15,212 @@ import soundfile as sf
 # Load environment variables from .env file
 load_dotenv()
 
-# Configuration Variables
-TEMP_WAV_PATH = "temp_meeting_clean.wav"  
+# Configuration Variables (set in .env or the shell; see README)
+#
+# HF_TOKEN
+#   Required. Hugging Face read token for Pyannote diarization.
+#
+# WHISPER_MODEL_PATH
+#   Folder with an OpenVINO Whisper export (optimum-cli). Default: "whisper"
+#   Example: WHISPER_MODEL_PATH=C:\models\whisper-medium-ov
+#
+# WHISPER_DEVICE  (OpenVINO only; ignored for PyTorch Whisper)
+#   Prefer one device, then script falls back through the rest:
+#     NPU | GPU | CPU
+#   Empty / unset: try NPU → GPU → CPU in order.
+#
+# WHISPER_BACKEND
+#   auto     — PyTorch Whisper if CUDA or Apple MPS exists, else OpenVINO (default)
+#   torch    — always Hugging Face + PyTorch (CUDA / MPS / CPU)
+#   openvino — always local OpenVINO export at WHISPER_MODEL_PATH
+#
+# WHISPER_HF_MODEL  (PyTorch / WHISPER_BACKEND=torch or auto with GPU)
+#   Any Hub ASR model id, e.g.:
+#     openai/whisper-tiny, openai/whisper-base, openai/whisper-small,
+#     openai/whisper-medium, openai/whisper-large-v2, openai/whisper-large-v3,
+#     distil-whisper/distil-small.en, …
+#   Default below: openai/whisper-small
+
+TEMP_WAV_PATH = "temp_meeting_clean.wav"
 HF_TOKEN = os.getenv("HF_TOKEN")
-MODEL_PATH = "whisper-base-ov"
-DEVICE_WHISPER = "NPU"
-DEVICE_DIARIZATION = "cpu"      
+MODEL_PATH = os.getenv("WHISPER_MODEL_PATH", "whisper")
+WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "").strip() or None
+WHISPER_BACKEND = os.getenv("WHISPER_BACKEND", "auto").strip().lower()
+WHISPER_HF_MODEL = os.getenv("WHISPER_HF_MODEL", "openai/whisper-small")
+
+def _diarization_torch_device() -> torch.device:
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def _openvino_device_order(preferred: Optional[str]) -> List[str]:
+    order = ["NPU", "GPU", "CPU"]
+    if not preferred:
+        return order
+    p = preferred.strip().upper()
+    if p not in order:
+        return order
+    return [p] + [d for d in order if d != p]
+
+
+def _load_whisper_openvino(model_path: str, device_hint: Optional[str]) -> Tuple[Any, str]:
+    import openvino_genai as ov_genai_local
+
+    if not os.path.isdir(model_path):
+        raise FileNotFoundError(
+            f"OpenVINO Whisper folder not found: {model_path!r}. "
+            "Export with optimum-cli (see README) or set WHISPER_MODEL_PATH."
+        )
+    last_err: Optional[Exception] = None
+    for dev in _openvino_device_order(device_hint):
+        try:
+            wp = ov_genai_local.WhisperPipeline(model_path, dev)
+            return wp, dev
+        except Exception as e:
+            last_err = e
+            print(f"   OpenVINO Whisper on {dev} failed: {e}")
+    raise RuntimeError(f"OpenVINO Whisper could not load on any device. Last error: {last_err}")
+
+
+def _pipeline_device_arg(dev: torch.device):
+    if dev.type == "cuda":
+        return 0
+    if dev.type == "mps":
+        return "mps"
+    return -1
+
+
+def _load_whisper_torch(model_id: str) -> Tuple[Any, torch.device]:
+    dev = _diarization_torch_device()
+    torch_dtype = torch.float16 if dev.type == "cuda" else torch.float32
+    pipe = hf_pipeline(
+        "automatic-speech-recognition",
+        model=model_id,
+        torch_dtype=torch_dtype,
+        device=_pipeline_device_arg(dev),
+    )
+    return pipe, dev
+
+
+def _transcribe_openvino(pipe: Any, audio: np.ndarray) -> str:
+    return str(pipe.generate(audio)).strip()
+
+
+def _transcribe_torch(pipe: Any, audio: np.ndarray) -> str:
+    out = pipe(audio, sampling_rate=16000)
+    if isinstance(out, dict):
+        return (out.get("text") or "").strip()
+    return str(out).strip()
+
+
+def _resolved_whisper_backend() -> str:
+    if WHISPER_BACKEND in ("openvino", "torch"):
+        return WHISPER_BACKEND
+    if WHISPER_BACKEND != "auto":
+        print(f"   Unknown WHISPER_BACKEND={WHISPER_BACKEND!r}, using auto.")
+    if torch.cuda.is_available():
+        return "torch"
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "torch"
+    return "openvino"
+
+
+def _build_whisper_transcriber() -> Tuple[Callable[[np.ndarray], str], str]:
+    mode = _resolved_whisper_backend()
+    if mode == "torch":
+        print(f"\n Loading Whisper (PyTorch) — {WHISPER_HF_MODEL} ...")
+        pipe, dev = _load_whisper_torch(WHISPER_HF_MODEL)
+        label = f"PyTorch / {dev.type.upper()}"
+        print(f"   -> Success! Whisper on {label}")
+
+        def fn(audio: np.ndarray) -> str:
+            return _transcribe_torch(pipe, audio)
+
+        return fn, label
+
+    print(f"\n Loading Whisper (OpenVINO) from '{MODEL_PATH}' ...")
+    ov_pipe, ov_dev = _load_whisper_openvino(MODEL_PATH, WHISPER_DEVICE)
+    label = f"OpenVINO / {ov_dev}"
+    print(f"   -> Success! Whisper on {label}")
+
+    def fn(audio: np.ndarray) -> str:
+        return _transcribe_openvino(ov_pipe, audio)
+
+    return fn, label
+
 
 if not HF_TOKEN:
     raise ValueError("HF_TOKEN not found in .env file!")
 
 # --- File selection dialogs (explorer / save-as) ---
-root = Tk()
-root.withdraw()
-root.attributes("-topmost", True)
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--video", type=str, help="Path to video file")
+parser.add_argument("--output", type=str, help="Path to output .txt file")
+parser.add_argument("--speakers", type=str, help="Number of speakers or 'auto'")
+args, _ = parser.parse_known_args()
 
-print("Select a video file to transcribe...")
-VIDEO_PATH = filedialog.askopenfilename(
-    title="Select video file to transcribe",
-    filetypes=[
-        ("Video files", ("*.mp4", "*.avi", "*.mkv", "*.mov", "*.webm", "*.flv", "*.wmv", "*.m4v")),
-        ("All files", "*.*"),
-    ],
-)
-if not VIDEO_PATH:
-    raise SystemExit("No video file selected. Exiting.")
+if args.video and args.output and args.speakers:
+    VIDEO_PATH = args.video
+    OUTPUT_FILE = args.output
+    if args.speakers.lower() == "auto":
+        NUM_SPEAKERS = None
+    else:
+        NUM_SPEAKERS = int(args.speakers)
+    if NUM_SPEAKERS is not None:
+        print(f"   -> Diarization will use num_speakers={NUM_SPEAKERS}")
+else:
+    root = Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    
+    print("Select a video file to transcribe...")
+    VIDEO_PATH = filedialog.askopenfilename(
+        title="Select video file to transcribe",
+        filetypes=[
+            ("Video files", ("*.mp4", "*.avi", "*.mkv", "*.mov", "*.webm", "*.flv", "*.wmv", "*.m4v")),
+            ("All files", "*.*"),
+        ],
+    )
+    if not VIDEO_PATH:
+        raise SystemExit("No video file selected. Exiting.")
+    
+    print("Choose where to save the transcript and enter the output .txt file name...")
+    default_filename = os.path.basename(VIDEO_PATH) + ".txt"
+    OUTPUT_FILE = filedialog.asksaveasfilename(
+        title="Save transcript as",
+        initialfile=default_filename,
+        defaultextension=".txt",
+        filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+    )
+    if not OUTPUT_FILE:
+        raise SystemExit("No output file chosen. Exiting.")
+    
+    NUM_SPEAKERS = simpledialog.askinteger(
+        "Number of speakers",
+        "How many speakers are in the conversation?\n(Leave empty or Cancel for auto-detect.)",
+        initialvalue=2,
+        minvalue=1,
+        maxvalue=50,
+        parent=root,
+    )
+    # None means user cancelled → let Pyannote auto-detect; otherwise use the chosen value
+    if NUM_SPEAKERS is not None:
+        print(f"   -> Diarization will use num_speakers={NUM_SPEAKERS}")
+    
+    root.destroy()
 
-print("Choose where to save the transcript and enter the output .txt file name...")
-OUTPUT_FILE = filedialog.asksaveasfilename(
-    title="Save transcript as",
-    defaultextension=".txt",
-    filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
-)
-if not OUTPUT_FILE:
-    raise SystemExit("No output file chosen. Exiting.")
+print(f"Configuration loaded (WHISPER_BACKEND={WHISPER_BACKEND!r}).")
 
-NUM_SPEAKERS = simpledialog.askinteger(
-    "Number of speakers",
-    "How many speakers are in the conversation?\n(Leave empty or Cancel for auto-detect.)",
-    initialvalue=2,
-    minvalue=1,
-    maxvalue=50,
-    parent=root,
-)
-# None means user cancelled → let Pyannote auto-detect; otherwise use the chosen value
-if NUM_SPEAKERS is not None:
-    print(f"   -> Diarization will use num_speakers={NUM_SPEAKERS}")
-
-root.destroy()
-
-print(f"Configuration loaded. Target: {DEVICE_WHISPER}")
-
-# --- 2. PRE-PROCESSING (The Fix) ---
+# --- 2. PRE-PROCESSING ---
 
 print(f"\n Step 0: Converting '{VIDEO_PATH}' to clean WAV format...")
-# This fixes the "ValueError: requested chunk..." crash by ensuring
-# Pyannote reads a perfect 16kHz WAV file, not a messy MP4.
+# Pyannote reads a 16kHz WAV file
 try:
-    # Load the audio from the video (this handles the decoding)
+    # Load the audio from the video to handle decoding 
     audio_data, samplerate = librosa.load(VIDEO_PATH, sr=16000)
     
     # Save it as a clean 16kHz WAV file
@@ -81,45 +231,33 @@ except Exception as e:
 
 # --- 3. LOAD MODELS ---
 
-print(f"\n Loading WhisperPipeline from '{MODEL_PATH}' to {DEVICE_WHISPER}...")
-try:
-    whisper_pipe = ov_genai.WhisperPipeline(MODEL_PATH, DEVICE_WHISPER)
-    print(f"   -> Success! Whisper running on {DEVICE_WHISPER}")
-except Exception as e:
-    print(f"  NPU Error: {e}")
-    print("   -> Falling back to CPU...")
-    whisper_pipe = ov_genai.WhisperPipeline(MODEL_PATH, "CPU")
+transcribe_segment, whisper_runtime_label = _build_whisper_transcriber()
 
-print("\n🎤 Loading Pyannote Pipeline (Speaker ID)...")
+print("\n Loading Pyannote Pipeline (Speaker ID)...")
 try:
-    # Updated to use 'token=' instead of 'use_auth_token=' for newer versions
     diarization_pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1", 
-        token=HF_TOKEN 
+        "pyannote/speaker-diarization-3.1",
+        token=HF_TOKEN,
     )
-    if torch.cuda.is_available():
-        diarization_pipeline.to(torch.device("cuda"))
-        print("   -> Diarization: GPU (CUDA)")
-    else:
-        print("   -> Diarization: CPU")
+    d_dev = _diarization_torch_device()
+    diarization_pipeline.to(d_dev)
+    print(f"   -> Diarization: {d_dev.type.upper()}")
 except Exception as e:
     raise RuntimeError(f"Pyannote Error: {e}")
 
 # --- 4. PROCESSING ---
 
-print("\n🕵️  Step 1: Analyzing Speakers (Diarization)...")
-# CRITICAL CHANGE: We pass the CLEAN WAV file, not the MP4
-# NUM_SPEAKERS from tkinter dialog (None = auto-detect)
+print("\n  Step 1: Analyzing Speakers (Diarization)...")
+
 if NUM_SPEAKERS is not None:
     diarization_result = diarization_pipeline(TEMP_WAV_PATH, num_speakers=NUM_SPEAKERS)
 else:
     diarization_result = diarization_pipeline(TEMP_WAV_PATH)
 
-print("\n Step 2: Transcribing Segments (Whisper GenAI)...")
+print(f"\n Step 2: Transcribing segments ({whisper_runtime_label})...")
 final_transcript = []
 
-# --- NEW: Handle the new Pyannote v4.x output format ---
-# We check if the result is wrapped in the new 'DiarizeOutput' object
+# Check if the result is wrapped in the new 'DiarizeOutput'
 if hasattr(diarization_result, "speaker_diarization"):
     # Extract the actual timeline data from the wrapper
     annotation = diarization_result.speaker_diarization
@@ -127,7 +265,7 @@ else:
     # Fallback for older Pyannote versions
     annotation = diarization_result
 
-# We use our newly extracted 'annotation' variable here instead of 'diarization_result'
+# Use extracted 'annotation' variable instead of 'diarization_result'
 for turn, _, speaker in annotation.itertracks(yield_label=True):
     start_sec = turn.start
     end_sec = turn.end
@@ -140,13 +278,11 @@ for turn, _, speaker in annotation.itertracks(yield_label=True):
     start_sample = int(start_sec * 16000)
     end_sample = int(end_sec * 16000)
     
-    # Slice the audio from our pre-loaded array
+    # Slice the audio from pre-loaded array
     speaker_audio = audio_data[start_sample:end_sample]
 
     try:
-        # Pass the raw numpy array directly to the C++ pipeline
-        res = whisper_pipe.generate(speaker_audio)
-        text = str(res).strip()
+        text = transcribe_segment(speaker_audio)
         
         if text:
             # Format: [00:15 - 00:20] SPEAKER_00: Hello.
@@ -167,4 +303,4 @@ with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
 if os.path.exists(TEMP_WAV_PATH):
     os.remove(TEMP_WAV_PATH)
 
-print(f"\n✅ Transcription Complete! Saved to {OUTPUT_FILE}")
+print(f"\n Transcription Complete! Saved to {OUTPUT_FILE}")
