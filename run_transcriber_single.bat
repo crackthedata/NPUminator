@@ -9,6 +9,7 @@ if not exist venv\Scripts\activate.bat (
 )
 
 call venv\Scripts\activate.bat
+set NUMBA_DISABLE_JIT=1
 python transcriber.py
 
 if %ERRORLEVEL% neq 0 (
